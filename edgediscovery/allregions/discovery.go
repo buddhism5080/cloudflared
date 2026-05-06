@@ -30,8 +30,8 @@ const (
 
 // Redeclare network functions so they can be overridden in tests.
 var (
-	netLookupSRV = net.LookupSRV
-	netLookupIP  = net.LookupIP
+	netLookupSRV = lookupSRVWithDOT
+	netLookupIP  = lookupIPWithDOT
 )
 
 // ConfigIPVersion is the selection of IP versions from config
@@ -152,7 +152,31 @@ func EdgeDiscovery(log *zerolog.Logger, srvService string) ([][]*EdgeAddr, error
 
 func lookupSRVWithDOT(srvService string, srvProto string, srvName string) (cname string, addrs []*net.SRV, err error) {
 	// Inspiration: https://github.com/artyom/dot/blob/master/dot.go
-	r := &net.Resolver{
+	r := newCloudflareDOTResolver()
+	ctx, cancel := context.WithTimeout(context.Background(), dotTimeout)
+	defer cancel()
+	return r.LookupSRV(ctx, srvService, srvProto, srvName)
+}
+
+func lookupIPWithDOT(host string) ([]net.IP, error) {
+	r := newCloudflareDOTResolver()
+	ctx, cancel := context.WithTimeout(context.Background(), dotTimeout)
+	defer cancel()
+
+	addrs, err := r.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+
+	ips := make([]net.IP, 0, len(addrs))
+	for _, addr := range addrs {
+		ips = append(ips, addr.IP)
+	}
+	return ips, nil
+}
+
+func newCloudflareDOTResolver() *net.Resolver {
+	return &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
 			var dialer net.Dialer
@@ -164,9 +188,6 @@ func lookupSRVWithDOT(srvService string, srvProto string, srvName string) (cname
 			return tls.Client(conn, tlsConfig), nil
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), dotTimeout)
-	defer cancel()
-	return r.LookupSRV(ctx, srvService, srvProto, srvName)
 }
 
 func resolveSRV(srv *net.SRV) ([]*EdgeAddr, error) {
