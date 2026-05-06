@@ -2,19 +2,17 @@ package edgediscovery
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"net"
 	"strings"
 	"time"
+
+	"github.com/cloudflare/cloudflared/dnsresolver"
 )
 
 const (
-	protocolRecord          = "protocol-v2.argotunnel.com"
-	protocolLookupTimeout   = 10 * time.Second
-	cloudflareDOTServerName = "cloudflare-dns.com"
-	cloudflareDOTServerAddr = "1.1.1.1:853"
+	protocolRecord        = "protocol-v2.argotunnel.com"
+	protocolLookupTimeout = 10 * time.Second
 )
 
 var (
@@ -47,7 +45,7 @@ func ProtocolPercentage() (ProtocolPercents, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), protocolLookupTimeout)
 	defer cancel()
 
-	records, err := newCloudflareDOTResolver().LookupTXT(ctx, protocolRecord)
+	records, err := dnsresolver.NewCloudflareResolver().LookupTXT(ctx, protocolRecord)
 	if err != nil {
 		return nil, err
 	}
@@ -58,19 +56,4 @@ func ProtocolPercentage() (ProtocolPercents, error) {
 	var protocolsWithPercent ProtocolPercents
 	err = json.Unmarshal([]byte(records[0]), &protocolsWithPercent)
 	return protocolsWithPercent, err
-}
-
-func newCloudflareDOTResolver() *net.Resolver {
-	return &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
-			var dialer net.Dialer
-			conn, err := dialer.DialContext(ctx, "tcp", cloudflareDOTServerAddr)
-			if err != nil {
-				return nil, err
-			}
-			tlsConfig := &tls.Config{ServerName: cloudflareDOTServerName}
-			return tls.Client(conn, tlsConfig), nil
-		},
-	}
 }

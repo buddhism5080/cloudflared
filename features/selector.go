@@ -2,7 +2,6 @@ package features
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -11,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudflare/cloudflared/dnsresolver"
 	"github.com/rs/zerolog"
 )
 
@@ -18,8 +18,6 @@ const (
 	featureSelectorHostname = "cfd-features.argotunnel.com"
 	lookupTimeout           = time.Second * 10
 	defaultLookupFreq       = time.Hour
-	cloudflareDOTServerName = "cloudflare-dns.com"
-	cloudflareDOTServerAddr = "1.1.1.1:853"
 )
 
 // If the TXT record adds other fields, the umarshal logic will ignore those keys
@@ -175,22 +173,7 @@ type dnsResolver struct {
 
 func newDNSResolver() *dnsResolver {
 	return &dnsResolver{
-		resolver: newCloudflareDOTResolver(),
-	}
-}
-
-func newCloudflareDOTResolver() *net.Resolver {
-	return &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
-			var dialer net.Dialer
-			conn, err := dialer.DialContext(ctx, "tcp", cloudflareDOTServerAddr)
-			if err != nil {
-				return nil, err
-			}
-			tlsConfig := &tls.Config{ServerName: cloudflareDOTServerName}
-			return tls.Client(conn, tlsConfig), nil
-		},
+		resolver: dnsresolver.NewCloudflareResolver(),
 	}
 }
 

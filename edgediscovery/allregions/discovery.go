@@ -2,11 +2,11 @@ package allregions
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net"
 	"time"
 
+	"github.com/cloudflare/cloudflared/dnsresolver"
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
 
@@ -19,19 +19,17 @@ const (
 	srvProto   = "tcp"
 	srvName    = "argotunnel.com"
 
-	// Used to fallback to DoT when we can't use the default resolver to
+	// Used to bypass Android/system loopback stub resolvers when we need Cloudflare edge discovery.
 	// discover HA origintunneld servers (GitHub issue #75).
-	dotServerName = "cloudflare-dns.com"
-	dotServerAddr = "1.1.1.1:853"
-	dotTimeout    = 15 * time.Second
+	cloudflareLookupTimeout = 15 * time.Second
 
 	logFieldAddress = "address"
 )
 
 // Redeclare network functions so they can be overridden in tests.
 var (
-	netLookupSRV = lookupSRVWithDOT
-	netLookupIP  = lookupIPWithDOT
+	netLookupSRV = lookupSRVWithCloudflareDNS
+	netLookupIP  = lookupIPWithCloudflareDNS
 )
 
 // ConfigIPVersion is the selection of IP versions from config
@@ -83,20 +81,15 @@ type EdgeAddr struct {
 	IPVersion EdgeIPVersion
 }
 
-// If the call to net.LookupSRV fails, try to fall back to DoT from Cloudflare directly.
+// If the call to net.LookupSRV fails, try to fall back to Cloudflare DNS directly.
 //
-// Note: Instead of DoT, we could also have used DoH. Either of these:
-//   - directly via the JSON API (https://1.1.1.1/dns-query?ct=application/dns-json&name=_origintunneld._tcp.argotunnel.com&type=srv)
-//   - indirectly via `tunneldns.NewUpstreamHTTPS()`
-//
-// But both of these cases miss out on a key feature from the stdlib:
+// We still go through the stdlib resolver here so SRV answers keep the same sorting/weight semantics.
 //
 //	"The returned records are sorted by priority and randomized by weight within a priority."
 //	(https://golang.org/pkg/net/#Resolver.LookupSRV)
 //
-// Does this matter? I don't know. It may someday. Let's use DoT so we don't need to worry about it.
-// See also: Go feature request for stdlib-supported DoH: https://github.com/golang/go/issues/27552
-var fallbackLookupSRV = lookupSRVWithDOT
+// We intentionally use ordinary port-53 DNS here so Android VPN/TUN dns-hijack rules can still intercept it.
+var fallbackLookupSRV = lookupSRVWithCloudflareDNS
 
 var friendlyDNSErrorLines = []string{
 	`Please try the following things to diagnose this issue:`,
@@ -150,17 +143,16 @@ func EdgeDiscovery(log *zerolog.Logger, srvService string) ([][]*EdgeAddr, error
 	return resolvedAddrPerCNAME, nil
 }
 
-func lookupSRVWithDOT(srvService string, srvProto string, srvName string) (cname string, addrs []*net.SRV, err error) {
-	// Inspiration: https://github.com/artyom/dot/blob/master/dot.go
-	r := newCloudflareDOTResolver()
-	ctx, cancel := context.WithTimeout(context.Background(), dotTimeout)
+func lookupSRVWithCloudflareDNS(srvService string, srvProto string, srvName string) (cname string, addrs []*net.SRV, err error) {
+	r := dnsresolver.NewCloudflareResolver()
+	ctx, cancel := context.WithTimeout(context.Background(), cloudflareLookupTimeout)
 	defer cancel()
 	return r.LookupSRV(ctx, srvService, srvProto, srvName)
 }
 
-func lookupIPWithDOT(host string) ([]net.IP, error) {
-	r := newCloudflareDOTResolver()
-	ctx, cancel := context.WithTimeout(context.Background(), dotTimeout)
+func lookupIPWithCloudflareDNS(host string) ([]net.IP, error) {
+	r := dnsresolver.NewCloudflareResolver()
+	ctx, cancel := context.WithTimeout(context.Background(), cloudflareLookupTimeout)
 	defer cancel()
 
 	addrs, err := r.LookupIPAddr(ctx, host)
@@ -174,22 +166,6 @@ func lookupIPWithDOT(host string) ([]net.IP, error) {
 	}
 	return ips, nil
 }
-
-func newCloudflareDOTResolver() *net.Resolver {
-	return &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
-			var dialer net.Dialer
-			conn, err := dialer.DialContext(ctx, "tcp", dotServerAddr)
-			if err != nil {
-				return nil, err
-			}
-			tlsConfig := &tls.Config{ServerName: dotServerName}
-			return tls.Client(conn, tlsConfig), nil
-		},
-	}
-}
-
 func resolveSRV(srv *net.SRV) ([]*EdgeAddr, error) {
 	ips, err := netLookupIP(srv.Target)
 	if err != nil {
