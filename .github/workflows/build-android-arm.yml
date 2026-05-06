@@ -1,0 +1,58 @@
+name: Build Android ARM binaries
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/build-android-arm.yml
+      - .github/scripts/build-android.sh
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.target.artifact_name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - build_target: arm64
+            artifact_name: cloudflared-android-arm64
+          - build_target: armv7
+            artifact_name: cloudflared-android-armv7
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Android NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27d
+          add-to-path: false
+
+      - name: Build Android binary
+        env:
+          ANDROID_API: "21"
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: ./.github/scripts/build-android.sh "${{ matrix.target.build_target }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target.artifact_name }}
+          path: |
+            dist/${{ matrix.target.artifact_name }}
+            dist/${{ matrix.target.artifact_name }}.sha256
+          if-no-files-found: error
